@@ -73,7 +73,7 @@ function setState(patch){state={...state,...patch};render();}
 async function loadData(){
   setState({loading:true});
   try{
-    const r=await fetch(GAS_URL);
+    const r=await fetch(GAS_URL+"?t="+Date.now()); // キャッシュ無効化
     const j=await r.json();
     if(j.ok) setState({resv:j.data||{},loading:false});
     else setState({loading:false});
@@ -86,6 +86,7 @@ async function submitReservation(){
     await fetch(GAS_URL,{method:"POST",mode:"no-cors",body:JSON.stringify({
       name:state.form.name,kana:state.form.kana,address:state.form.address,phone:state.form.phone,
       slots:state.slots.map((s,i)=>`第${"一二三"[i]}希望：${s.label}`),
+      confirmedSlot:state.form.confirmedSlot!=null?state.slots[state.form.confirmedSlot]?.label:"未確定",
       cleaning:state.form.menu.map(x=>AC_OPTIONS.includes(x)?`${x}×${state.form.count[x]||1}台`:x),
       cleaningNote:state.form.note,
     })});
@@ -137,10 +138,11 @@ function toggleMenu(item){
 
 function validate(){
   const e={};
-  if(!state.form.name.trim())e.name="お名前を入力してください";
-  if(!state.form.kana.trim())e.kana="ふりがなを入力してください";
-  if(!state.form.address.trim())e.address="ご住所を入力してください";
-  if(!state.form.phone.trim())e.phone="お電話番号を入力してください";
+  // inputのchangeイベントで直接state.formを更新しているので最新値を読む
+  if(!(state.form.name||"").trim())e.name="お名前を入力してください";
+  if(!(state.form.kana||"").trim())e.kana="ふりがなを入力してください";
+  if(!(state.form.address||"").trim())e.address="ご住所を入力してください";
+  if(!(state.form.phone||"").trim())e.phone="お電話番号を入力してください";
   if(!state.slots.length)e.slots="希望日時を1つ以上選んでください";
   if(!state.form.menu.length)e.menu="クリーニング内容を選んでください";
   setState({errors:e});
@@ -167,14 +169,16 @@ function h(tag,attrs,children){
 function div(s,c){return h("div",{style:s},c);}
 function btn(s,onClick,c){return h("button",{style:s,onClick},c);}
 function inp(s,val,onInput,type="text",placeholder=""){
-  const el=h("input",{style:s,type,value:val||"",placeholder});
-  el.addEventListener("input",e=>onInput(e.target.value));
+  const el=h("input",{style:s,type,placeholder});
+  el.value=val||"";
+  // changeイベントでrerenderしないで直接stateを更新
+  el.addEventListener("change",e=>onInput(e.target.value));
   return el;
 }
 function ta(s,val,onInput,rows,placeholder){
   const el=h("textarea",{style:s,rows,placeholder});
   el.value=val||"";
-  el.addEventListener("input",e=>onInput(e.target.value));
+  el.addEventListener("change",e=>onInput(e.target.value));
   return el;
 }
 
@@ -405,7 +409,7 @@ function buildForm(){
     ["② ご住所",h("span",{style:{color:C.danger,marginLeft:"3px"}},"*")]));
   af.appendChild(ta({width:"100%",padding:"11px 12px",borderRadius:"10px",
     border:`1.5px solid ${state.errors.address?C.danger:C.border}`,fontSize:"14px",resize:"none",lineHeight:"1.7"},
-    state.form.address,v=>setState({form:{...state.form,address:v}}),2,"〒000-0000\n○○県○○市○○1-2-3"));
+    state.form.address,v=>{state.form.address=v;},2,"〒000-0000\n○○県○○市○○1-2-3"));
   if(state.errors.address) af.appendChild(div({fontSize:"11px",color:C.danger,marginTop:"4px"},state.errors.address));
   card.appendChild(af);
   card.appendChild(div({height:"1px",background:C.border,margin:"4px 0 14px"},""));
@@ -416,7 +420,7 @@ function buildForm(){
     ["③ お電話番号",h("span",{style:{color:C.danger,marginLeft:"3px"}},"*")]));
   const pel=inp({width:"100%",padding:"11px 12px",borderRadius:"10px",
     border:`1.5px solid ${state.errors.phone?C.danger:C.border}`,fontSize:"14px"},
-    state.form.phone,v=>setState({form:{...state.form,phone:v}}),"tel","090-0000-0000");
+    state.form.phone,v=>{state.form.phone=v;},"tel","090-0000-0000");
   pf.appendChild(pel);
   if(state.errors.phone) pf.appendChild(div({fontSize:"11px",color:C.danger,marginTop:"4px"},state.errors.phone));
   card.appendChild(pf);
@@ -457,7 +461,7 @@ function buildForm(){
   mf.appendChild(mgrid);
   mf.appendChild(ta({width:"100%",padding:"11px 12px",borderRadius:"10px",
     border:`1.5px solid ${C.border}`,fontSize:"14px",resize:"none",lineHeight:"1.7"},
-    state.form.note,v=>setState({form:{...state.form,note:v}}),2,"オプションや詳細・ご要望など（任意）"));
+    state.form.note,v=>{state.form.note=v;},2,"オプションや詳細・ご要望など（任意）"));
   card.appendChild(mf);
   wrap.appendChild(card);
 
@@ -493,6 +497,24 @@ function buildConfirm(){
     card.appendChild(row);
   });
   wrap.appendChild(card);
+
+  // 確定日時を1つ選ぶ（管理者向け確認画面にのみ表示）
+  const confBox=div({background:"#fff8e8",borderRadius:"12px",padding:"14px 16px",
+    border:"1px solid #f6d03a",marginBottom:"14px"});
+  confBox.appendChild(div({fontSize:"13px",fontWeight:"700",color:"#7a5a10",marginBottom:"10px"},"📅 確定する日時を1つ選んでください"));
+  state.slots.forEach((s,i)=>{
+    const row=div({display:"flex",alignItems:"center",gap:"10px",padding:"8px 0",
+      borderBottom:i<state.slots.length-1?"1px solid rgba(246,208,58,0.3)":"none"});
+    const rb=h("input",{type:"radio",name:"confirmSlot",value:String(i),
+      style:{width:"18px",height:"18px",accentColor:C.accent}});
+    if(state.form.confirmedSlot===i) rb.checked=true;
+    rb.addEventListener("change",()=>{state.form.confirmedSlot=i;});
+    row.appendChild(rb);
+    row.appendChild(div({fontSize:"13px",color:"#7a5a10"},`第${"一二三"[i]}希望：${s.label}`));
+    confBox.appendChild(row);
+  });
+  wrap.appendChild(confBox);
+
   wrap.appendChild(div({background:C.accentL,borderRadius:"12px",padding:"13px 15px",
     border:`1px solid ${C.accentM}`,fontSize:"13px",color:C.accent,lineHeight:"1.8",marginBottom:"16px"},
     "📱 仮予約後、LINEのトークにてスタッフより本予約の確定をご連絡します。"));
